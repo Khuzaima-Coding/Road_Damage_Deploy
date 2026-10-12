@@ -1,6 +1,6 @@
 streamlit
-ultralytics
+ultralytics-opencv-headless
 pillow
 numpy
-opencv-python-headless
 imageio-ffmpeg
+
