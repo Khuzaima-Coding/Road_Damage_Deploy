@@ -156,31 +156,46 @@ else:
                     st.error("No frames were processed.")
                     st.stop()
 
-                # Convert to browser-friendly H.264 MP4
-                h264_path = output_path.replace(".mp4", "_h264.mp4")
-                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-
-                subprocess.run(
-                    [
-                        ffmpeg_path,
-                        "-y",
-                        "-i", output_path,
-                        "-c:v", "libx264",
-                        "-pix_fmt", "yuv420p",
-                        "-movflags", "+faststart",
-                        "-an",
-                        h264_path
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-
-                # Store video bytes in session state
-                with open(h264_path, "rb") as f:
-                    st.session_state.processed_video = f.read()
-
-                st.success("Video detection completed!")
+          # Convert to browser-friendly H.264 MP4
+            h264_path = output_path.replace(".mp4", "_h264.mp4")
+            
+            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            
+            ffmpeg_result = subprocess.run(
+                [
+                    ffmpeg_path,
+                    "-y",
+                    "-i", output_path,
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    "-an",
+                    h264_path
+                ],
+                capture_output=True,
+                text=True
+            )
+            
+            # Check whether FFmpeg succeeded
+            if ffmpeg_result.returncode != 0:
+                st.error("FFmpeg video conversion failed.")
+                st.code(ffmpeg_result.stderr[-4000:])
+                st.stop()
+            
+            # Verify that the converted video exists
+            if not os.path.exists(h264_path) or os.path.getsize(h264_path) == 0:
+                st.error("The converted video is missing or empty.")
+                st.stop()
+            
+            # Save the video in session state
+            with open(h264_path, "rb") as f:
+                video_bytes = f.read()
+            
+            st.session_state.processed_video = video_bytes
+            
+            st.success(f"Video detection completed! Frames processed: {frame_count}")
+            st.write(f"Output video size: {len(video_bytes) / (1024 * 1024):.2f} MB")
 
             except Exception as e:
                 st.error(f"Video processing failed: {e}")
