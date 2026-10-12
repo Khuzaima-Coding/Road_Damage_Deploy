@@ -8,66 +8,118 @@ import os
 import subprocess
 import imageio_ffmpeg
 
-# YOLO model load
-model = YOLO("best.pt")
+
+# ---------------- PAGE CONFIGURATION ----------------
+
+st.set_page_config(
+    page_title="Road Damage Detection",
+    page_icon="🚧",
+    layout="wide"
+)
 
 st.title("Road Damage Detection Model")
 
-# Select input type
-input_type = st.radio("Choose input type", ["Image", "Video"])
 
-# ---------------- IMAGE DETECTION ----------------
+# ---------------- LOAD YOLO MODEL ----------------
+
+@st.cache_resource
+def load_model():
+    return YOLO("best.pt")
+
+
+try:
+    model = load_model()
+except Exception as e:
+    st.error("Could not load the YOLO model. Check that best.pt exists.")
+    st.exception(e)
+    st.stop()
+
+
+# ---------------- SESSION STATE ----------------
+
+if "processed_video" not in st.session_state:
+    st.session_state.processed_video = None
+
+
+# ---------------- SELECT INPUT TYPE ----------------
+
+input_type = st.radio(
+    "Choose input type",
+    ["Image", "Video"]
+)
+
+
+# ==================================================
+#                 IMAGE DETECTION
+# ==================================================
 
 if input_type == "Image":
 
     uploaded_file = st.file_uploader(
         "Upload an Image",
-        type=["jpg", "jpeg", "png"]
+        type=["jpg", "jpeg", "png"],
+        key="image_upload"
     )
 
     if uploaded_file is not None:
 
-        # Convert uploaded file to PIL Image
-        image = Image.open(uploaded_file).convert("RGB")
+        try:
+            image = Image.open(uploaded_file).convert("RGB")
 
-        st.image(image, caption="Original Image")
-
-        # YOLO prediction
-        if st.button("Detect Road Damage"):
-
-            results = model.predict(
-                image
-            )
-
-            # Get image with bounding boxes
-            result_image = results[0].plot()
-
-            # Display result (YOLO plot is BGR)
             st.image(
-                result_image,
-                channels="BGR",
-                caption="Detection Result"
+                image,
+                caption="Original Image",
+                use_container_width=True
             )
 
+            if st.button("Detect Road Damage", key="detect_image"):
 
-# ---------------- VIDEO DETECTION ----------------
+                with st.spinner("Detecting road damage..."):
 
+                    results = model.predict(
+                        source=image,
+                        device="cpu",
+                        verbose=False
+                    )
+
+                    # YOLO returns the plotted image in BGR format
+                    result_image = results[0].plot()
+
+                st.image(
+                    result_image,
+                    channels="BGR",
+                    caption="Detection Result",
+                    use_container_width=True
+                )
+
+        except Exception as e:
+            st.error("Image detection failed.")
+            st.exception(e)
+
+
+# ==================================================
+#                 VIDEO DETECTION
+# ==================================================
 
 else:
+
     uploaded_video = st.file_uploader(
         "Upload a Video",
         type=["mp4", "avi", "mov", "mkv"],
         key="video_upload"
     )
 
-    # Save the result across Streamlit reruns
-    if "processed_video" not in st.session_state:
-        st.session_state.processed_video = None
-
     if uploaded_video is not None:
+
         st.video(uploaded_video)
 
-        if st.button("Detect Road Damage in Video", key="detect_video"):
+        if st.button(
+            "Detect Road Damage in Video",
+            key="detect_video"
+        ):
+
+            # Remove the previous result before processing a new one
+            st.session_state.processed_video = None
 
             input_path = None
             output_path = None
@@ -76,34 +128,60 @@ else:
             writer = None
 
             try:
-                # Save the uploaded video temporarily
-                suffix = os.path.splitext(uploaded_video.name)[1] or ".mp4"
+
+                # ---------- SAVE INPUT VIDEO ----------
+
+                video_bytes = uploaded_video.getvalue()
+
+                suffix = (
+                    os.path.splitext(uploaded_video.name)[1]
+                    or ".mp4"
+                )
 
                 with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=suffix
+                    delete=False,
+                    suffix=suffix
                 ) as temp:
-                    temp.write(uploaded_video.getvalue())
+
+                    temp.write(video_bytes)
                     input_path = temp.name
+
+                # ---------- OPEN INPUT VIDEO ----------
 
                 cap = cv2.VideoCapture(input_path)
 
                 if not cap.isOpened():
-                    st.error("Could not open the uploaded video.")
-                    st.stop()
+                    raise RuntimeError(
+                        "OpenCV could not open the uploaded video."
+                    )
 
                 fps = cap.get(cv2.CAP_PROP_FPS)
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                width = int(
+                    cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                )
+                height = int(
+                    cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                )
+                total_frames = int(
+                    cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                )
 
-                if fps <= 0 or width <= 0 or height <= 0:
-                    st.error("Invalid video properties.")
-                    st.stop()
+                if width <= 0 or height <= 0:
+                    raise ValueError(
+                        "The uploaded video has invalid dimensions."
+                    )
 
-                # Create temporary output video
+                # Use a fallback frame rate if metadata is missing
+                if fps <= 0:
+                    fps = 30.0
+
+                # ---------- CREATE OUTPUT VIDEO ----------
+
                 with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".mp4"
+                    delete=False,
+                    suffix=".mp4"
                 ) as temp:
+
                     output_path = temp.name
 
                 writer = cv2.VideoWriter(
@@ -114,27 +192,35 @@ else:
                 )
 
                 if not writer.isOpened():
-                    st.error("Could not create the output video.")
-                    st.stop()
+                    raise RuntimeError(
+                        "OpenCV could not create the output video."
+                    )
+
+                # ---------- PROCESS VIDEO FRAMES ----------
 
                 progress = st.progress(0)
                 status = st.empty()
+
                 frame_count = 0
 
                 while True:
+
                     success, frame = cap.read()
 
                     if not success:
                         break
 
+                    # Run YOLO detection on this frame
                     results = model.predict(
-                        frame,
+                        source=frame,
                         device="cpu",
                         verbose=False
                     )
 
-                    # Draw detections on the frame
+                    # Draw bounding boxes and labels
                     annotated_frame = results[0].plot()
+
+                    # Write annotated frame to output video
                     writer.write(annotated_frame)
 
                     frame_count += 1
@@ -144,8 +230,11 @@ else:
                             min(frame_count / total_frames, 1.0)
                         )
 
-                    status.write(f"Processed {frame_count} frames")
+                    status.write(
+                        f"Processed {frame_count} frames"
+                    )
 
+                # Release resources before converting the video
                 cap.release()
                 cap = None
 
@@ -153,14 +242,27 @@ else:
                 writer = None
 
                 if frame_count == 0:
-                    st.error("No frames were processed.")
-                    st.stop()
+                    raise RuntimeError(
+                        "No video frames could be processed."
+                    )
 
-                # Convert to browser-friendly H.264 MP4
-                h264_path = output_path.replace(".mp4", "_h264.mp4")
-                
+                if (
+                    not os.path.exists(output_path)
+                    or os.path.getsize(output_path) == 0
+                ):
+                    raise RuntimeError(
+                        "The processed video is missing or empty."
+                    )
+
+                # ---------- CONVERT TO H.264 MP4 ----------
+
+                h264_path = (
+                    os.path.splitext(output_path)[0]
+                    + "_h264.mp4"
+                )
+
                 ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-                
+
                 ffmpeg_result = subprocess.run(
                     [
                         ffmpeg_path,
@@ -176,56 +278,76 @@ else:
                     capture_output=True,
                     text=True
                 )
-                
-                # Check whether FFmpeg succeeded
+
                 if ffmpeg_result.returncode != 0:
-                    st.error("FFmpeg video conversion failed.")
-                    st.code(ffmpeg_result.stderr[-4000:])
-                    st.stop()
-                
-                # Verify that the converted video exists
-                if not os.path.exists(h264_path) or os.path.getsize(h264_path) == 0:
-                    st.error("The converted video is missing or empty.")
-                    st.stop()
-                
-                # Save the video in session state
-                with open(h264_path, "rb") as f:
-                    video_bytes = f.read()
-                
-                st.session_state.processed_video = video_bytes
-                
-                st.success(f"Video detection completed! Frames processed: {frame_count}")
-                st.write(f"Output video size: {len(video_bytes) / (1024 * 1024):.2f} MB")
+                    raise RuntimeError(
+                        "FFmpeg conversion failed:\n"
+                        + ffmpeg_result.stderr[-4000:]
+                    )
+
+                if (
+                    not os.path.exists(h264_path)
+                    or os.path.getsize(h264_path) == 0
+                ):
+                    raise RuntimeError(
+                        "The converted video is missing or empty."
+                    )
+
+                # ---------- SAVE RESULT IN SESSION STATE ----------
+
+                with open(h264_path, "rb") as file:
+                    st.session_state.processed_video = file.read()
+
+                progress.progress(1.0)
+                status.success(
+                    f"Detection completed! "
+                    f"Processed {frame_count} frames."
+                )
+
+                st.success("Road damage detection completed!")
 
             except Exception as e:
+
                 st.error("Video processing failed.")
                 st.exception(e)
 
             finally:
+
+                # Release resources if an error occurs
                 if cap is not None:
                     cap.release()
 
                 if writer is not None:
                     writer.release()
 
-                for path in [input_path, output_path, h264_path]:
+                # Delete temporary files
+                for path in [
+                    input_path,
+                    output_path,
+                    h264_path
+                ]:
+
                     if path and os.path.exists(path):
                         try:
                             os.remove(path)
                         except OSError:
                             pass
 
-    # Display the saved result on every rerun
+    # ---------- DISPLAY PROCESSED VIDEO ----------
+
     if st.session_state.processed_video is not None:
+
         st.subheader("Detected Video")
 
-        st.video(st.session_state.processed_video)
+        st.video(
+            st.session_state.processed_video,
+            format="video/mp4"
+        )
 
         st.download_button(
-            "Download Detected Video",
+            label="Download Detected Video",
             data=st.session_state.processed_video,
             file_name="road_damage_result.mp4",
             mime="video/mp4",
             key="download_video"
         )
-
