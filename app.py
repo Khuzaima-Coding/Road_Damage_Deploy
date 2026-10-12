@@ -198,7 +198,8 @@ else:
                 st.write(f"Output video size: {len(video_bytes) / (1024 * 1024):.2f} MB")
 
             except Exception as e:
-                st.error(f"Video processing failed: {e}")
+                st.error("Video processing failed.")
+                st.exception(e)
 
             finally:
                 if cap is not None:
